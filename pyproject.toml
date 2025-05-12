@@ -3,7 +3,7 @@ name = "surrealengine_auth"
 version = "0.1.0"
 description = "Authentication and authorization module for applications using SurrealDB & SurrealEngine"
 authors = [
-    {name = "SurrealEngine Team", email = "st0pt4ck1ngus@gmail"}
+    {name = "SurrealEngine Team", email = "st0pt4ck1ngus@gmail.com"}
 ]
 readme = "README.md"
 requires-python = ">=3.9"
