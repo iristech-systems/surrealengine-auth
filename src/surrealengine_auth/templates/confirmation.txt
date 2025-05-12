@@ -1,0 +1,10 @@
+Hello {{ user.username }},
+
+Thank you for registering. Please confirm your email address by visiting the following link:
+
+{{ confirmation_link }}
+
+If you didn't register for an account, you can safely ignore this email.
+
+---
+This is an automated message. Please do not reply to this email.

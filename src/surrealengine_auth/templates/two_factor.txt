@@ -1,0 +1,12 @@
+Hello {{ user.username }},
+
+Your two-factor authentication code is:
+
+{{ code }}
+
+This code will expire in 5 minutes.
+
+If you didn't request this code, please secure your account by changing your password immediately.
+
+---
+This is an automated message. Please do not reply to this email.

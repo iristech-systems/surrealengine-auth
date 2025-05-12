@@ -2,8 +2,13 @@ from datetime import datetime, timedelta, UTC
 import uuid
 import secrets
 import hashlib
-from typing import Optional, List, Dict, Any, Union
+import base64
+import io
+from typing import Optional, List, Dict, Any, Union, Tuple
 import asyncio
+import pyotp
+import qrcode
+import qrcode.image.svg
 from surrealengine.document import Document
 from surrealengine.fields import (
     StringField, DateTimeField, BooleanField, RelationField, 
@@ -24,6 +29,19 @@ class User(Document):
     # User status
     is_active = BooleanField(default=True)
     is_admin = BooleanField(default=False)
+
+    # Account activation
+    confirmed_at = DateTimeField()
+
+    # Two-factor authentication
+    totp_secret = StringField()
+    tf_primary_method = StringField()  # 'email', 'sms', 'authenticator'
+    tf_phone_number = StringField()
+    tf_recovery_codes = ListField(StringField())
+
+    # Passwordless authentication
+    login_token = StringField()
+    login_token_expires_at = DateTimeField()
 
     # Timestamps
     created_at = DateTimeField(default=lambda: datetime.now(UTC))
@@ -134,6 +152,203 @@ class User(Document):
         """Get all active (non-expired, non-revoked) API keys for this user."""
         now = datetime.now(UTC)
         return [key for key in self.resolve_relation_sync('user_keys') if key.is_active and key.expires_at > now]
+
+    # Two-factor authentication methods
+    def setup_two_factor(self, method: str, phone_number: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Set up two-factor authentication for the user.
+
+        Args:
+            method: The 2FA method ('email', 'sms', 'authenticator')
+            phone_number: Phone number for SMS-based 2FA
+
+        Returns:
+            Dict with setup information (varies by method)
+        """
+        # Generate TOTP secret if not already set
+        if not self.totp_secret:
+            self.totp_secret = TOTPManager.generate_totp_secret()
+
+        # Set primary method
+        self.tf_primary_method = method
+
+        # Set phone number for SMS method
+        if method == 'sms' and phone_number:
+            self.tf_phone_number = phone_number
+
+        # Generate recovery codes if not already set
+        if not self.tf_recovery_codes:
+            self.tf_recovery_codes = TOTPManager.generate_recovery_codes()
+
+        self.updated_at = datetime.now(UTC)
+        self.save_sync()
+
+        # Return setup information based on method
+        if method == 'authenticator':
+            return {
+                'secret': self.totp_secret,
+                'qrcode': TOTPManager.generate_qrcode(self.totp_secret, self.username),
+                'recovery_codes': self.tf_recovery_codes
+            }
+        elif method == 'email':
+            return {
+                'email': self.email,
+                'recovery_codes': self.tf_recovery_codes
+            }
+        elif method == 'sms':
+            return {
+                'phone_number': self.tf_phone_number,
+                'recovery_codes': self.tf_recovery_codes
+            }
+        return {}
+
+    def verify_two_factor(self, code: str) -> bool:
+        """
+        Verify a two-factor authentication code.
+
+        Args:
+            code: The 2FA code to verify
+
+        Returns:
+            True if the code is valid, False otherwise
+        """
+        if not self.totp_secret or not self.tf_primary_method:
+            return False
+
+        # Check if it's a recovery code
+        if code in self.tf_recovery_codes:
+            # Remove the used recovery code
+            self.tf_recovery_codes.remove(code)
+            self.updated_at = datetime.now(UTC)
+            self.save_sync()
+            return True
+
+        # Verify TOTP code
+        return TOTPManager.verify_totp_code(self.totp_secret, code)
+
+    def generate_two_factor_code(self) -> Optional[str]:
+        """
+        Generate a two-factor authentication code.
+
+        Returns:
+            The generated code, or None if 2FA is not set up
+        """
+        if not self.totp_secret:
+            return None
+
+        return TOTPManager.generate_totp_code(self.totp_secret)
+
+    def disable_two_factor(self) -> None:
+        """Disable two-factor authentication for the user."""
+        self.totp_secret = None
+        self.tf_primary_method = None
+        self.tf_phone_number = None
+        self.tf_recovery_codes = []
+        self.updated_at = datetime.now(UTC)
+        self.save_sync()
+
+    # Account activation methods
+    def generate_confirmation_token(self) -> str:
+        """
+        Generate a token for email confirmation.
+
+        Returns:
+            The confirmation token
+        """
+        # Create a unique token using user ID and email
+        data = f"{self.id}:{self.email}:{secrets.token_hex(16)}"
+        return base64.urlsafe_b64encode(data.encode()).decode()
+
+    @classmethod
+    def verify_confirmation_token(cls, token: str) -> Optional["User"]:
+        """
+        Verify a confirmation token and return the associated user.
+
+        Args:
+            token: The confirmation token
+
+        Returns:
+            The user if the token is valid, None otherwise
+        """
+        try:
+            # Decode the token
+            data = base64.urlsafe_b64decode(token.encode()).decode()
+            user_id, email, _ = data.split(':', 2)
+
+            # Find the user
+            user = cls.objects.get_sync(id=user_id)
+
+            # Verify the email matches
+            if user and user.email == email:
+                return user
+
+        except Exception:
+            pass
+
+        return None
+
+    def confirm_email(self) -> bool:
+        """
+        Confirm the user's email address.
+
+        Returns:
+            True if the email was confirmed, False if already confirmed
+        """
+        if self.confirmed_at:
+            return False
+
+        self.confirmed_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
+        self.save_sync()
+        return True
+
+    # Passwordless authentication methods
+    def generate_login_token(self, expires_in: int = 3600) -> str:
+        """
+        Generate a token for passwordless login.
+
+        Args:
+            expires_in: Token expiration time in seconds (default: 1 hour)
+
+        Returns:
+            The login token
+        """
+        # Create a unique token
+        self.login_token = secrets.token_urlsafe(32)
+        self.login_token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
+        self.updated_at = datetime.now(UTC)
+        self.save_sync()
+        return self.login_token
+
+    @classmethod
+    def verify_login_token(cls, token: str) -> Optional["User"]:
+        """
+        Verify a login token and return the associated user.
+
+        Args:
+            token: The login token
+
+        Returns:
+            The user if the token is valid, None otherwise
+        """
+        try:
+            # Find the user with this token
+            user = cls.objects.filter_sync(login_token=token).first_sync()
+
+            # Check if the token is valid and not expired
+            if user and user.login_token_expires_at and user.login_token_expires_at > datetime.now(UTC):
+                # Clear the token
+                user.login_token = None
+                user.login_token_expires_at = None
+                user.last_login = datetime.now(UTC)
+                user.updated_at = datetime.now(UTC)
+                user.save_sync()
+                return user
+
+        except Exception:
+            pass
+
+        return None
 
 
 class APIKey(Document):
@@ -274,3 +489,60 @@ class APIKey(Document):
             return key_id, key_secret
         except ValueError:
             return None, None
+
+
+class TOTPManager:
+    """
+    Manager for Time-based One-Time Password (TOTP) operations.
+    Used for two-factor authentication with authenticator apps.
+    """
+
+    @staticmethod
+    def generate_totp_secret() -> str:
+        """Generate a new TOTP secret."""
+        return pyotp.random_base32()
+
+    @staticmethod
+    def generate_totp_code(totp_secret: str) -> str:
+        """Generate a TOTP code for the given secret."""
+        totp = pyotp.TOTP(totp_secret)
+        return totp.now()
+
+    @staticmethod
+    def verify_totp_code(totp_secret: str, code: str) -> bool:
+        """Verify a TOTP code against the given secret."""
+        totp = pyotp.TOTP(totp_secret)
+        return totp.verify(code)
+
+    @staticmethod
+    def get_totp_uri(totp_secret: str, username: str, issuer: str = "SurrealEngineAuth") -> str:
+        """Get the TOTP URI for QR code generation."""
+        totp = pyotp.TOTP(totp_secret)
+        return totp.provisioning_uri(username, issuer_name=issuer)
+
+    @staticmethod
+    def generate_qrcode(totp_secret: str, username: str, issuer: str = "SurrealEngineAuth") -> str:
+        """Generate a QR code for the TOTP secret."""
+        uri = TOTPManager.get_totp_uri(totp_secret, username, issuer)
+
+        # Generate QR code as SVG
+        qr = qrcode.make(uri, image_factory=qrcode.image.svg.SvgImage)
+
+        # Convert to base64 for embedding in HTML
+        with io.BytesIO() as buffer:
+            qr.save(buffer)
+            image_data = base64.b64encode(buffer.getvalue()).decode('ascii')
+
+        return f"data:image/svg+xml;base64,{image_data}"
+
+    @staticmethod
+    def generate_recovery_codes(count: int = 10) -> List[str]:
+        """Generate recovery codes for two-factor authentication."""
+        codes = []
+        for _ in range(count):
+            # Generate a 16-character hex code
+            code = secrets.token_hex(8)
+            # Format as xxxx-xxxx-xxxx-xxxx
+            formatted_code = f"{code[:4]}-{code[4:8]}-{code[8:12]}-{code[12:16]}"
+            codes.append(formatted_code)
+        return codes
