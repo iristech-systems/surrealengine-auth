@@ -76,7 +76,7 @@ class AuthService:
         return user
 
     @staticmethod
-    def authenticate_with_api_key(api_key: str) -> Optional[APIKey]:
+    def authenticate_with_api_key(api_key: str) -> Optional[User]:
         """
         Authenticate using an API key.
 
@@ -87,7 +87,8 @@ class AuthService:
             APIKey instance if authentication successful, None otherwise
         """
         check_key = APIKey.objects.get_sync(key_id=api_key)
-        if not check_key or not (user := check_key.resolve_relation_sync('user')) or not len(user) > 0:
+
+        if not check_key or not (user := check_key.resolve_relation_sync('user_keys')) or not len(user) > 0:
             return None
 
         return User.objects.get_sync(email=user[0].get('email'))

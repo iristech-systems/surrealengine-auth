@@ -131,7 +131,7 @@ AuthService.refresh_api_key(api_key, expires_in_days=30)
 
 ## Requirements
 
-- Python 3.13+
+- Python 3.9+
 - SurrealEngine
 
 ## License

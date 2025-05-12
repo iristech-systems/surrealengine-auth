@@ -3,10 +3,10 @@ name = "surrealengine_auth"
 version = "0.1.0"
 description = "Authentication and authorization module for applications using SurrealDB & SurrealEngine"
 authors = [
-    {name = "SurrealEngine Team", email = "info@example.com"}
+    {name = "SurrealEngine Team", email = "st0pt4ck1ngus@gmail"}
 ]
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.9"
 license = {text = "MIT"}
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -23,5 +23,5 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/example/surrealengine-auth"
-"Bug Tracker" = "https://github.com/example/surrealengine-auth/issues"
+"Homepage" = "https://github.com/iristech-systems/surrealengine-auth"
+"Bug Tracker" = "https://github.com/iristech-systems/surrealengine-auth/issues"

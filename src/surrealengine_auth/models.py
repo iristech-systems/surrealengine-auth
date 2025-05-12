@@ -30,9 +30,6 @@ class User(Document):
     updated_at = DateTimeField(default=lambda: datetime.now(UTC))
     last_login = DateTimeField()
 
-    # Related API keys
-    api_keys = Document.relates('user_keys')
-
     # Additional user data
     metadata = DictField(default=dict)
 
@@ -162,7 +159,7 @@ class APIKey(Document):
     # Permissions
     scopes = ListField(StringField(), default=lambda: ["read"])
 
-
+    user = Document.relates('user_keys')
     # Additional key data
     metadata = DictField(default=dict)
 
@@ -198,7 +195,7 @@ class APIKey(Document):
             metadata=metadata or {}
         ).save_sync()
 
-        user.relate_to_sync('user_keys',new_key)
+        new_key.relate_to_sync('user_keys',user)
         return {'key': new_key.to_dict(),
                 'user': user.to_dict()}
 
