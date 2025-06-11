@@ -12,7 +12,7 @@ import qrcode.image.svg
 from surrealengine.document import Document
 from surrealengine.fields import (
     StringField, DateTimeField, BooleanField, RelationField, 
-    ListField, DictField
+    ListField, DictField, EmailField, IPAddressField, ChoiceField, URLField
 )
 
 class UserBuiltin(Document):
@@ -22,8 +22,8 @@ class UserBuiltin(Document):
     """
 
     # Basic user information
-    username = StringField(required=True,  )
-    email = StringField(required=True,  )
+    username = StringField(required=True, indexed=True, unique=True)
+    email = EmailField(required=True, indexed=True, unique=True)
     password_hash = StringField(required=True)
     salt = StringField(required=True)
 
@@ -53,7 +53,7 @@ class UserBuiltin(Document):
     metadata = DictField(default=dict)
 
     # Relation to API keys
-    api_keys = Document.relates('user_keys')
+    api_keys = RelationField('user_keys')
 
     @classmethod
     def create_user(cls, username: str, email: str, password: str, 
@@ -200,7 +200,7 @@ class UserBuiltin(Document):
         Returns:
             True if the key was found and revoked, False otherwise
         """
-        for key in self.api_keys:
+        for key in self.api_keys.get_related_documents_sync():
             if str(key.id) == key_id:
                 key.revoke()
                 return True
@@ -216,24 +216,29 @@ class UserBuiltin(Document):
         Returns:
             True if the key was found and revoked, False otherwise
         """
-        key = await APIKey.objects.get(key_id=key_id)
-        user_relations = await key.resolve_relation('user_keys')
-        if user_relations:
-            if key and self.id in [user.get('id') for user in user_relations]:
-                print(key.key_id)
-                await key.revoke_async()
-                return True
+        try:
+            user_keys = await self.api_keys.get_related_documents()
+            for key in user_keys:
+                if str(key.key_id) == key_id:
+                    key.revoke()
+                    return True
+        except Exception as e:
+            # Add error logging
+            from .logger import get_logger
+            logger = get_logger()
+            logger.error(f"Error revoking API key: {e}")
+
         return False
 
     def get_active_api_keys(self) -> List["APIKey"]:
         """Get all active (non-expired, non-revoked) API keys for this user (synchronous version)."""
         now = datetime.now(UTC)
-        return [key for key in self.resolve_relation_sync('user_keys') if key.is_active and key.expires_at > now]
+        return [key for key in self.api_keys.get_related_documents_sync() if key.is_active and key.expires_at > now]
 
     async def get_active_api_keys_async(self) -> List["APIKey"]:
         """Get all active (non-expired, non-revoked) API keys for this user (asynchronous version)."""
         now = datetime.now(UTC)
-        keys = await self.resolve_relation('user_keys')
+        keys = await self.api_keys.get_related_documents()
         return [key for key in keys if key.is_active and key.expires_at > now]
 
     class Meta:
@@ -625,9 +630,9 @@ class APIKey(Document):
     """
 
     # Key information
-    key_id = StringField(default=lambda: str(uuid.uuid4()), )
+    key_id = StringField(default=lambda: str(uuid.uuid4()), indexed=True, unique=True)
     key_secret = StringField(required=True)
-    name = StringField(required=True)
+    name = StringField(required=True, indexed=True)
 
     # Key status
     is_active = BooleanField(default=True)
@@ -642,7 +647,9 @@ class APIKey(Document):
     # Permissions
     scopes = ListField(StringField(), default=lambda: ["read"])
 
-    user = Document.relates('user_keys')
+    # Relation to user
+    user = RelationField('user_keys')
+
     # Additional key data
     metadata = DictField(default=dict)
 
@@ -832,6 +839,91 @@ class APIKey(Document):
             return key_id, key_secret
         except ValueError:
             return None, None
+
+
+class SecurityEvent(Document):
+    """Model for storing security events."""
+
+    EVENT_TYPES = [
+        "login_success", "login_failed", "logout", "password_changed",
+        "user_created", "user_updated", "user_deactivated", "user_activated",
+        "api_key_created", "api_key_revoked", "api_key_refreshed",
+        "two_factor_enabled", "two_factor_disabled", "two_factor_verified",
+        "email_confirmed", "passwordless_login",
+        # Add missing event types
+        "user_registered", "user_authenticated", "user_unauthenticated",
+        "api_key_authentication_succeeded", "api_key_authentication_failed",
+        "confirmation_email_sent", "confirmation_email_send_failed",
+        "email_confirmation_failed", "two_factor_verification_failed",
+        "two_factor_code_sent", "two_factor_code_send_failed",
+        "passwordless_login_link_sent", "passwordless_login_link_send_failed",
+        "passwordless_login_succeeded", "passwordless_login_failed",
+        "two_factor_authentication_succeeded", "two_factor_authentication_failed"
+    ]
+
+    event_type = ChoiceField(choices=EVENT_TYPES, required=True, indexed=True)
+    timestamp = DateTimeField(required=True, indexed=True)
+    user_id = StringField(indexed=True)
+    ip_address = IPAddressField()
+    user_agent = StringField()
+    details = DictField()
+
+    class Meta:
+        collection = 'security_event'
+
+    @classmethod
+    def log_event(cls, event_type: str, user_id: Optional[str] = None,
+                  ip_address: Optional[str] = None, user_agent: Optional[str] = None,
+                  details: Optional[Dict[str, Any]] = None, connection=None):
+        """Log a security event."""
+        from .logger import get_logger
+        logger = get_logger()
+
+        event = cls(
+            event_type=event_type,
+            timestamp=datetime.now(UTC),
+            user_id=user_id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details=details or {}
+        )
+        try:
+            event.save_sync(connection=connection)
+            logger.info(f"Security event logged: {event_type}", {
+                'event_type': event_type,
+                'user_id': user_id,
+                'ip_address': ip_address
+            })
+        except Exception as e:
+            logger.error(f"Error logging security event: {e}")
+        return event
+
+    @classmethod
+    async def log_event_async(cls, event_type: str, user_id: Optional[str] = None,
+                              ip_address: Optional[str] = None, user_agent: Optional[str] = None,
+                              details: Optional[Dict[str, Any]] = None, connection=None):
+        """Log a security event asynchronously."""
+        from .logger import get_logger
+        logger = get_logger()
+
+        event = cls(
+            event_type=event_type,
+            timestamp=datetime.now(UTC),
+            user_id=user_id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            details=details or {}
+        )
+        try:
+            await event.save(connection=connection)
+            logger.info(f"Security event logged asynchronously: {event_type}", {
+                'event_type': event_type,
+                'user_id': user_id,
+                'ip_address': ip_address
+            })
+        except Exception as e:
+            logger.error(f"Error logging security event asynchronously: {e}")
+        return event
 
 
 class TOTPManager:

@@ -41,8 +41,12 @@ Example usage:
         print(f"Authenticated as {user.username}")
 """
 
-from .models import User, UserBuiltin, APIKey, TOTPManager
+from .models import User, UserBuiltin, APIKey, TOTPManager, SecurityEvent
 from .service import SurrealEngineAuth
 from .email_service import EmailService
+from .logger import SurrealEngineLogger, get_logger
 
-__all__ = ["User", "UserBuiltin", "APIKey", "SurrealEngineAuth", "TOTPManager", "EmailService"]
+__all__ = [
+    "User", "UserBuiltin", "APIKey", "TOTPManager", "SecurityEvent", 
+    "SurrealEngineAuth", "EmailService", "SurrealEngineLogger", "get_logger"
+]
