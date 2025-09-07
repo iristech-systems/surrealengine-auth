@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, UTC
 from typing import Optional, List, Dict, Any, Tuple, Union, Type
 import os
 
+from surrealengine.query import Q
 from .models import User, UserBuiltin, APIKey, TOTPManager, SecurityEvent
 from .email_service import EmailService
 
@@ -70,13 +71,11 @@ class SurrealEngineAuth:
             Tuple of (User, created) where created is True if a new user was created
         """
         # Check if user already exists
-        existing_user = cls._user_class.objects.filter_sync(username=username).first_sync()
+        existing_user = cls._user_class.objects.filter_sync(
+            Q(username=username) | Q(email=email)
+        ).first_sync()
         if existing_user:
             return existing_user, False
-
-        existing_email = cls._user_class.objects.filter_sync(email=email).first_sync()
-        if existing_email:
-            return existing_email, False
 
         # Create new user
         user = cls._user_class.create_user(
@@ -118,13 +117,11 @@ class SurrealEngineAuth:
             Tuple of (User, created) where created is True if a new user was created
         """
         # Check if user already exists
-        existing_user = await cls._user_class.objects.filter(username=username)
+        existing_user = await (await cls._user_class.objects.filter(
+            Q(username=username) | Q(email=email)
+        )).first()
         if existing_user:
             return existing_user, False
-
-        existing_email = await cls._user_class.objects.filter(email=email)
-        if existing_email:
-            return existing_email, False
 
         # Create new user
         user = await cls._user_class.create_user_async(
@@ -161,9 +158,9 @@ class SurrealEngineAuth:
             User instance if authentication successful, None otherwise
         """
         # Try to find user by username or email
-        user = cls._user_class.objects.filter_sync(username=username_or_email).first_sync()
-        if not user:
-            user = cls._user_class.objects.filter_sync(email=username_or_email).first_sync()
+        user = cls._user_class.objects.filter_sync(
+            Q(username=username_or_email) | Q(email=username_or_email)
+        ).first_sync()
 
         if not user or not user.is_active:
 
@@ -189,8 +186,7 @@ class SurrealEngineAuth:
             return None
 
         # Update last login timestamp
-        user.last_login = datetime.now(UTC)
-        user.save_sync()
+        user.update_sync(last_login=datetime.now(UTC))
 
         # Log security event for successful authentication
         SecurityEvent.log_event(
@@ -218,9 +214,9 @@ class SurrealEngineAuth:
             User instance if authentication successful, None otherwise
         """
         # Try to find user by username or email
-        user = await cls._user_class.objects.filter(username=username_or_email).first()
-        if not user:
-            user = await cls._user_class.objects.filter(email=username_or_email).first()
+        user = await (await cls._user_class.objects.filter(
+            Q(username=username_or_email) | Q(email=username_or_email)
+        )).first()
 
         if not user or not user.is_active:
 
@@ -246,8 +242,7 @@ class SurrealEngineAuth:
             return None
 
         # Update last login timestamp
-        user.last_login = datetime.now(UTC)
-        await user.save()
+        await user.update(last_login=datetime.now(UTC))
 
         # Log security event for successful authentication
         await SecurityEvent.log_event_async(
@@ -273,9 +268,9 @@ class SurrealEngineAuth:
         Returns:
             User instance if authentication successful, None otherwise
         """
-        check_key = APIKey.objects.get_sync(key_id=api_key)
+        check_key = APIKey.objects.get_sync(key_id=api_key, dereference=True)
 
-        if not check_key or not (user_data := check_key.resolve_relation_sync('user_keys')) or not len(user_data) > 0:
+        if not check_key or not hasattr(check_key, 'user') or not check_key.user:
             # Log security event for failed API key authentication
             SecurityEvent.log_event(
                 event_type="api_key_authentication_failed",
@@ -285,7 +280,7 @@ class SurrealEngineAuth:
             )
             return None
 
-        user = cls._user_class.objects.get_sync(email=user_data[0].get('email'))
+        user = check_key.user
         if user:
             # Log security event for successful API key authentication
             SecurityEvent.log_event(
@@ -311,9 +306,9 @@ class SurrealEngineAuth:
         Returns:
             User instance if authentication successful, None otherwise
         """
-        check_key = await APIKey.objects.get(key_id=api_key)
+        check_key = await APIKey.objects.get(key_id=api_key, dereference=True)
 
-        if not check_key or not check_key.is_active or not (user_data := await check_key.resolve_relation('user_keys')) or not len(user_data) > 0:
+        if not check_key or not check_key.is_active or not hasattr(check_key, 'user') or not check_key.user:
             # Log security event for failed API key authentication
             await SecurityEvent.log_event_async(
                 event_type="api_key_authentication_failed",
@@ -323,7 +318,7 @@ class SurrealEngineAuth:
             )
             return None
 
-        user = await cls._user_class.objects.get(email=user_data[0].get('email'))
+        user = check_key.user
         if user:
             # Log security event for successful API key authentication
             await SecurityEvent.log_event_async(
@@ -508,19 +503,17 @@ class SurrealEngineAuth:
         api_key.refresh(expires_in_days)
 
         # Get the user associated with this API key
-        user_data = api_key.resolve_relation_sync('user_keys')
-        if user_data and len(user_data) > 0:
-            user_id = user_data[0].get('id')
-            username = user_data[0].get('username')
-
+        api_key.resolve_references_sync()
+        if hasattr(api_key, 'user') and api_key.user:
+            user = api_key.user
             # Log security event
             SecurityEvent.log_event(
                 event_type="api_key_refreshed",
-                user_id=str(user_id),
+                user_id=str(user.id),
                 ip_address=ip_address,
                 user_agent=user_agent,
                 details={
-                    "username": username,
+                    "username": user.username,
                     "api_key_id": str(api_key.id),
                     "api_key_name": api_key.name,
                     "old_expires_at": old_expires_at.isoformat() if old_expires_at else None,
@@ -553,19 +546,17 @@ class SurrealEngineAuth:
         await api_key.refresh_async(expires_in_days)
 
         # Get the user associated with this API key
-        user_data = await api_key.resolve_relation('user_keys')
-        if user_data and len(user_data) > 0:
-            user_id = user_data[0].get('id')
-            username = user_data[0].get('username')
-
+        await api_key.resolve_references()
+        if hasattr(api_key, 'user') and api_key.user:
+            user = api_key.user
             # Log security event
             await SecurityEvent.log_event_async(
                 event_type="api_key_refreshed",
-                user_id=str(user_id),
+                user_id=str(user.id),
                 ip_address=ip_address,
                 user_agent=user_agent,
                 details={
-                    "username": username,
+                    "username": user.username,
                     "api_key_id": str(api_key.id),
                     "api_key_name": api_key.name,
                     "old_expires_at": old_expires_at.isoformat() if old_expires_at else None,
@@ -807,8 +798,8 @@ class SurrealEngineAuth:
                 setattr(user, key, value)
                 updated_fields[key] = value
 
-        user.updated_at = datetime.now(UTC)
-        user.save_sync()
+        updated_fields['updated_at'] = datetime.now(UTC)
+        user.update_sync(**updated_fields)
 
         # Log security event for user update
         SecurityEvent.log_event(
@@ -849,9 +840,7 @@ class SurrealEngineAuth:
         Returns:
             Updated User instance
         """
-        user.is_active = False
-        user.updated_at = datetime.now(UTC)
-        user.save_sync()
+        user.update_sync(is_active=False, updated_at=datetime.now(UTC))
 
         # Revoke all active API keys
         revoked_keys = []
@@ -901,9 +890,7 @@ class SurrealEngineAuth:
         Returns:
             Updated User instance
         """
-        user.is_active = True
-        user.updated_at = datetime.now(UTC)
-        user.save_sync()
+        user.update_sync(is_active=True, updated_at=datetime.now(UTC))
 
         # Log security event for user activation
         SecurityEvent.log_event(
@@ -1324,8 +1311,7 @@ class SurrealEngineAuth:
             )
 
             # Update last login timestamp
-            user.last_login = datetime.now(UTC)
-            user.save_sync()
+            user.update_sync(last_login=datetime.now(UTC))
         else:
             # Log security event for failed authentication
             SecurityEvent.log_event(

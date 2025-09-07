@@ -130,21 +130,21 @@ class UserBuiltin(Document):
         """Update the user's password (synchronous version)."""
         salt = secrets.token_hex(16)
         password_hash = self._hash_password(new_password, salt)
-
-        self.salt = salt
-        self.password_hash = password_hash
-        self.updated_at = datetime.now(UTC)
-        self.save_sync()
+        self.update_sync(
+            salt=salt,
+            password_hash=password_hash,
+            updated_at=datetime.now(UTC)
+        )
 
     async def update_password_async(self, new_password: str) -> None:
         """Update the user's password (asynchronous version)."""
         salt = secrets.token_hex(16)
         password_hash = self._hash_password(new_password, salt)
-
-        self.salt = salt
-        self.password_hash = password_hash
-        self.updated_at = datetime.now(UTC)
-        await self.save()
+        await self.update(
+            salt=salt,
+            password_hash=password_hash,
+            updated_at=datetime.now(UTC)
+        )
 
     def create_api_key(self, name: str, expires_in_days: int = 365, 
                       scopes: List[str] = None, metadata: Dict[str, Any] = None) -> Dict:
@@ -282,8 +282,13 @@ class User(UserBuiltin):
         if not self.tf_recovery_codes:
             self.tf_recovery_codes = TOTPManager.generate_recovery_codes()
 
-        self.updated_at = datetime.now(UTC)
-        self.save_sync()
+        self.update_sync(
+            totp_secret=self.totp_secret,
+            tf_primary_method=method,
+            tf_phone_number=self.tf_phone_number,
+            tf_recovery_codes=self.tf_recovery_codes,
+            updated_at=datetime.now(UTC)
+        )
 
         # Return setup information based on method
         if method == 'authenticator':
@@ -330,8 +335,13 @@ class User(UserBuiltin):
         if not self.tf_recovery_codes:
             self.tf_recovery_codes = TOTPManager.generate_recovery_codes()
 
-        self.updated_at = datetime.now(UTC)
-        await self.save()
+        await self.update(
+            totp_secret=self.totp_secret,
+            tf_primary_method=method,
+            tf_phone_number=self.tf_phone_number,
+            tf_recovery_codes=self.tf_recovery_codes,
+            updated_at=datetime.now(UTC)
+        )
 
         # Return setup information based on method
         if method == 'authenticator':
@@ -369,8 +379,10 @@ class User(UserBuiltin):
         if code in self.tf_recovery_codes:
             # Remove the used recovery code
             self.tf_recovery_codes.remove(code)
-            self.updated_at = datetime.now(UTC)
-            self.save_sync()
+            self.update_sync(
+                tf_recovery_codes=self.tf_recovery_codes,
+                updated_at=datetime.now(UTC)
+            )
             return True
 
         # Verify TOTP code
@@ -393,8 +405,10 @@ class User(UserBuiltin):
         if code in self.tf_recovery_codes:
             # Remove the used recovery code
             self.tf_recovery_codes.remove(code)
-            self.updated_at = datetime.now(UTC)
-            await self.save()
+            await self.update(
+                tf_recovery_codes=self.tf_recovery_codes,
+                updated_at=datetime.now(UTC)
+            )
             return True
 
         # Verify TOTP code
@@ -414,21 +428,23 @@ class User(UserBuiltin):
 
     def disable_two_factor(self) -> None:
         """Disable two-factor authentication for the user (synchronous version)."""
-        self.totp_secret = None
-        self.tf_primary_method = None
-        self.tf_phone_number = None
-        self.tf_recovery_codes = []
-        self.updated_at = datetime.now(UTC)
-        self.save_sync()
+        self.update_sync(
+            totp_secret=None,
+            tf_primary_method=None,
+            tf_phone_number=None,
+            tf_recovery_codes=[],
+            updated_at=datetime.now(UTC)
+        )
 
     async def disable_two_factor_async(self) -> None:
         """Disable two-factor authentication for the user (asynchronous version)."""
-        self.totp_secret = None
-        self.tf_primary_method = None
-        self.tf_phone_number = None
-        self.tf_recovery_codes = []
-        self.updated_at = datetime.now(UTC)
-        await self.save()
+        await self.update(
+            totp_secret=None,
+            tf_primary_method=None,
+            tf_phone_number=None,
+            tf_recovery_codes=[],
+            updated_at=datetime.now(UTC)
+        )
 
     # Account activation methods
     def generate_confirmation_token(self) -> str:
@@ -508,9 +524,10 @@ class User(UserBuiltin):
         if self.confirmed_at:
             return False
 
-        self.confirmed_at = datetime.now(UTC)
-        self.updated_at = datetime.now(UTC)
-        self.save_sync()
+        self.update_sync(
+            confirmed_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC)
+        )
         return True
 
     async def confirm_email_async(self) -> bool:
@@ -523,9 +540,10 @@ class User(UserBuiltin):
         if self.confirmed_at:
             return False
 
-        self.confirmed_at = datetime.now(UTC)
-        self.updated_at = datetime.now(UTC)
-        await self.save()
+        await self.update(
+            confirmed_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC)
+        )
         return True
 
     # Passwordless authentication methods
@@ -542,8 +560,11 @@ class User(UserBuiltin):
         # Create a unique token
         self.login_token = secrets.token_urlsafe(32)
         self.login_token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
-        self.updated_at = datetime.now(UTC)
-        self.save_sync()
+        self.update_sync(
+            login_token=self.login_token,
+            login_token_expires_at=self.login_token_expires_at,
+            updated_at=datetime.now(UTC)
+        )
         return self.login_token
 
     async def generate_login_token_async(self, expires_in: int = 3600) -> str:
@@ -559,8 +580,11 @@ class User(UserBuiltin):
         # Create a unique token
         self.login_token = secrets.token_urlsafe(32)
         self.login_token_expires_at = datetime.now(UTC) + timedelta(seconds=expires_in)
-        self.updated_at = datetime.now(UTC)
-        await self.save()
+        await self.update(
+            login_token=self.login_token,
+            login_token_expires_at=self.login_token_expires_at,
+            updated_at=datetime.now(UTC)
+        )
         return self.login_token
 
     @classmethod
@@ -581,11 +605,12 @@ class User(UserBuiltin):
             # Check if the token is valid and not expired
             if user and user.login_token_expires_at and user.login_token_expires_at > datetime.now(UTC):
                 # Clear the token
-                user.login_token = None
-                user.login_token_expires_at = None
-                user.last_login = datetime.now(UTC)
-                user.updated_at = datetime.now(UTC)
-                user.save_sync()
+                user.update_sync(
+                    login_token=None,
+                    login_token_expires_at=None,
+                    last_login=datetime.now(UTC),
+                    updated_at=datetime.now(UTC)
+                )
                 return user
 
         except Exception:
@@ -611,11 +636,12 @@ class User(UserBuiltin):
             # Check if the token is valid and not expired
             if user and user.login_token_expires_at and user.login_token_expires_at > datetime.now(UTC):
                 # Clear the token
-                user.login_token = None
-                user.login_token_expires_at = None
-                user.last_login = datetime.now(UTC)
-                user.updated_at = datetime.now(UTC)
-                await user.save()
+                await user.update(
+                    login_token=None,
+                    login_token_expires_at=None,
+                    last_login=datetime.now(UTC),
+                    updated_at=datetime.now(UTC)
+                )
                 return user
 
         except Exception:
@@ -744,8 +770,7 @@ class APIKey(Document):
                 return None
 
             # Update last used timestamp
-            key.last_used_at = datetime.now(UTC)
-            key.save_sync()
+            key.update_sync(last_used_at=datetime.now(UTC))
 
             return key
         except (ValueError, Exception):
@@ -776,8 +801,7 @@ class APIKey(Document):
                 return None
 
             # Update last used timestamp
-            key.last_used_at = datetime.now(UTC)
-            await key.save()
+            await key.update(last_used_at=datetime.now(UTC))
 
             return key
         except (ValueError, Exception):
@@ -785,29 +809,33 @@ class APIKey(Document):
 
     def revoke(self) -> None:
         """Revoke this API key (synchronous version)."""
-        self.is_active = False
-        self.revoked_at = datetime.now(UTC)
-        self.updated_at = datetime.now(UTC)
-        self.save_sync()
+        self.update_sync(
+            is_active=False,
+            revoked_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC)
+        )
 
     async def revoke_async(self) -> None:
         """Revoke this API key (asynchronous version)."""
-        self.is_active = False
-        self.revoked_at = datetime.now(UTC)
-        self.updated_at = datetime.now(UTC)
-        await self.save()
+        await self.update(
+            is_active=False,
+            revoked_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC)
+        )
 
     def refresh(self, expires_in_days: int = 365) -> None:
         """Extend the expiration of this API key (synchronous version)."""
-        self.expires_at = datetime.now(UTC) + timedelta(days=expires_in_days)
-        self.updated_at = datetime.now(UTC)
-        self.save_sync()
+        self.update_sync(
+            expires_at=datetime.now(UTC) + timedelta(days=expires_in_days),
+            updated_at=datetime.now(UTC)
+        )
 
     async def refresh_async(self, expires_in_days: int = 365) -> None:
         """Extend the expiration of this API key (asynchronous version)."""
-        self.expires_at = datetime.now(UTC) + timedelta(days=expires_in_days)
-        self.updated_at = datetime.now(UTC)
-        await self.save()
+        await self.update(
+            expires_at=datetime.now(UTC) + timedelta(days=expires_in_days),
+            updated_at=datetime.now(UTC)
+        )
 
     def has_scope(self, scope: str) -> bool:
         """Check if this API key has the specified scope."""
@@ -874,7 +902,7 @@ class SecurityEvent(Document):
     @classmethod
     def log_event(cls, event_type: str, user_id: Optional[str] = None,
                   ip_address: Optional[str] = None, user_agent: Optional[str] = None,
-                  details: Optional[Dict[str, Any]] = None, connection=None):
+                  details: Optional[Dict[str, Any]] = None):
         """Log a security event."""
         from .logger import get_logger
         logger = get_logger()
@@ -888,7 +916,7 @@ class SecurityEvent(Document):
             details=details or {}
         )
         try:
-            event.save_sync(connection=connection)
+            event.save_sync()
             logger.info(f"Security event logged: {event_type}", {
                 'event_type': event_type,
                 'user_id': user_id,
@@ -901,7 +929,7 @@ class SecurityEvent(Document):
     @classmethod
     async def log_event_async(cls, event_type: str, user_id: Optional[str] = None,
                               ip_address: Optional[str] = None, user_agent: Optional[str] = None,
-                              details: Optional[Dict[str, Any]] = None, connection=None):
+                              details: Optional[Dict[str, Any]] = None):
         """Log a security event asynchronously."""
         from .logger import get_logger
         logger = get_logger()
@@ -915,7 +943,7 @@ class SecurityEvent(Document):
             details=details or {}
         )
         try:
-            await event.save(connection=connection)
+            await event.save()
             logger.info(f"Security event logged asynchronously: {event_type}", {
                 'event_type': event_type,
                 'user_id': user_id,

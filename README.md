@@ -21,6 +21,46 @@ A comprehensive authentication and authorization module for SurrealEngine applic
 pip install surrealengine-auth
 ```
 
+## Connection Setup
+
+`surrealengine-auth` relies on a default connection to be configured for `surrealengine`. You can set up a default connection using the `create_connection` function from `surrealengine`.
+
+Here's an example of how to set up a default asynchronous connection:
+
+```python
+from surrealengine import create_connection
+
+# Set up the default connection
+await create_connection(
+    url="ws://localhost:8000/rpc",
+    namespace="test",
+    database="test",
+    username="root",
+    password="root",
+    make_default=True
+)
+```
+
+And here's an example of how to set up a default synchronous connection:
+
+```python
+from surrealengine import create_connection
+
+# Set up the default connection
+create_connection(
+    url="ws://localhost:8000/rpc",
+    namespace="test",
+    database="test",
+    username="root",
+    password="root",
+    async_mode=False,
+    auto_connect=True,
+    make_default=True
+)
+```
+
+Once the default connection is set up, you can use `surrealengine-auth` without having to worry about passing connection objects around.
+
 ## Quick Start
 
 ```python
@@ -67,10 +107,9 @@ user, created = AuthService.register_user(
 ### Authenticating Users
 
 ```python
-# Authenticate with username/email and password
+# Authenticate with username or email and password
+# The new API uses a single query to check for both username and email
 user = AuthService.authenticate("johndoe", "securepassword")
-# or
-user = AuthService.authenticate("john@example.com", "securepassword")
 
 if user:
     print(f"Authenticated as {user.username}")
@@ -110,6 +149,7 @@ api_key = AuthService.create_api_key(
 
 ```python
 # Authenticate with API key
+# This will automatically fetch the related user object
 user = AuthService.authenticate_with_api_key(formatted_key)
 
 # Check if key has specific permissions
