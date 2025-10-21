@@ -9,7 +9,7 @@ import asyncio
 import pyotp
 import qrcode
 import qrcode.image.svg
-from surrealengine.document import Document
+from surrealengine.document import Document, RelationDocument
 from surrealengine.fields import (
     StringField, DateTimeField, BooleanField, RelationField, 
     ListField, DictField, EmailField, IPAddressField, ChoiceField, URLField
@@ -51,9 +51,6 @@ class UserBuiltin(Document):
 
     # Additional user data
     metadata = DictField(default=dict)
-
-    # Relation to API keys
-    api_keys = RelationField('user_keys')
 
     @classmethod
     def create_user(cls, username: str, email: str, password: str, 
@@ -650,7 +647,7 @@ class User(UserBuiltin):
         return None
 
 
-class APIKey(Document):
+class APIKey(RelationDocument):
     """
     API key model for authentication and authorization.
     """
@@ -672,9 +669,6 @@ class APIKey(Document):
 
     # Permissions
     scopes = ListField(StringField(), default=lambda: ["read"])
-
-    # Relation to user
-    user = RelationField('user_keys')
 
     # Additional key data
     metadata = DictField(default=dict)
@@ -989,11 +983,15 @@ class TOTPManager:
         uri = TOTPManager.get_totp_uri(totp_secret, username, issuer)
 
         # Generate QR code as SVG
-        qr = qrcode.make(uri, image_factory=qrcode.image.svg.SvgImage)
+        qr = qrcode.QRCode(image_factory=qrcode.image.svg.SvgPathImage)
+        qr.add_data(uri)
+        qr.make(fit=True)
+
+        img = qr.make_image(fill_color="black", back_color="white")
 
         # Convert to base64 for embedding in HTML
         with io.BytesIO() as buffer:
-            qr.save(buffer)
+            img.save(buffer)
             image_data = base64.b64encode(buffer.getvalue()).decode('ascii')
 
         return f"data:image/svg+xml;base64,{image_data}"

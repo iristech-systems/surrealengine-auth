@@ -5,6 +5,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pathlib import Path
+from .logger import get_logger
 
 class EmailService:
     """
@@ -24,7 +25,7 @@ class EmailService:
     ):
         """
         Initialize the email service.
-        
+
         Args:
             smtp_host: SMTP server hostname
             smtp_port: SMTP server port
@@ -42,6 +43,7 @@ class EmailService:
         self.use_tls = use_tls
         self.use_ssl = use_ssl
         self.default_sender = default_sender
+        self.logger = get_logger()
         
         # Set up Jinja2 environment
         if templates_dir is None:
@@ -111,9 +113,8 @@ class EmailService:
             msg.attach(part1)
             msg.attach(part2)
         except Exception as e:
-            # If template not found or rendering fails, use a simple text message
-            print(f"Template rendering error: {e}")
-            msg.attach(MIMEText(f"Error rendering template: {e}", 'plain'))
+            # If template not found or rendering fails, log error
+            self.logger.error(f"Template rendering error: {e}")
             return False
         
         # Send email
@@ -130,15 +131,15 @@ class EmailService:
                 port=self.smtp_port,
                 username=self.smtp_username,
                 password=self.smtp_password,
-                use_tls=self.use_tls,
-                start_tls=self.use_tls and not self.use_ssl,
+                use_tls=self.use_ssl,
+                start_tls=self.use_tls,
                 validate_certs=True,
                 sender=sender,
                 recipients=recipients
             )
             return True
         except Exception as e:
-            print(f"Email sending error: {e}")
+            self.logger.error(f"Email sending error: {e}")
             return False
     
     def send_email_sync(
@@ -155,15 +156,8 @@ class EmailService:
         Synchronous version of send_email.
         """
         import asyncio
-        
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            # If no event loop is available, create a new one
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        return loop.run_until_complete(
+
+        return asyncio.run(
             self.send_email(recipient, subject, template_name, context, sender, cc, bcc)
         )
     
