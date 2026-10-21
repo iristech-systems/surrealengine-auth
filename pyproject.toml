@@ -1,32 +1,72 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "surrealengine_auth"
-version = "0.1.0"
+version = "0.2.0"
 description = "Authentication and authorization module for applications using SurrealDB & SurrealEngine"
 authors = [
     {name = "SurrealEngine Team", email = "st0pt4ck1ngus@gmail.com"}
 ]
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = {text = "MIT"}
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Database",
-    "Topic :: Security :: Cryptography",
+    "Topic :: Security",
 ]
 dependencies = [
-    "surrealengine>=0.1.0",
+    "surrealengine>=2.0.0,<3",
+    # surrealengine 2.x needs a SurrealDB 3 pre-release, and pip will only
+    # consider pre-release versions of a package when a requirement names one
+    # explicitly. Without this line a plain `pip install surrealengine-auth`
+    # fails to resolve: pip sees "surrealdb<3.0.0b7" as the only candidate and
+    # reports surrealengine==2.0.0 as unusable. Matches surrealengine's own
+    # constraint; remove it once a stable SurrealDB 3 ships.
+    "surrealdb>=3.0.0b7",
+    "argon2-cffi>=23.1.0",
     "pyotp>=2.8.0",
     "qrcode>=7.4.2",
     "jinja2>=3.1.2",
-    "aiosmtplib>=2.0.1",
+    "aiosmtplib>=4.0.0",
     "email-validator>=2.0.0",
+]
+
+[project.optional-dependencies]
+# Embedded SurrealDB engine (mem://, file://, surrealkv://) - used by the test suite
+embedded = ["surrealengine[embedded]>=2.0.0,<3"]
+dev = [
+    "surrealengine[embedded]>=2.0.0,<3",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
 ]
 
 [project.urls]
 "Homepage" = "https://github.com/iristech-systems/surrealengine-auth"
 "Bug Tracker" = "https://github.com/iristech-systems/surrealengine-auth/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+surrealengine_auth = ["templates/*.html", "templates/*.txt"]
+
+[tool.setuptools]
+# Ship the migration and security guides with the source distribution; the
+# README links to them.
+license-files = ["LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"

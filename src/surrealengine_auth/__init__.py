@@ -1,52 +1,64 @@
 """
-SurrealEngine Authentication and Authorization Module.
+SurrealEngine Authentication and Authorization.
 
-This module provides user and API key management for SurrealEngine applications.
-It includes models, services, and API endpoints for authentication and authorization.
+Targets surrealengine 2.0.0.
 
-Example usage:
+Setup::
 
-    # Import the auth module
-    from surrealengine.auth import AuthService, User, APIKey
+    from surrealengine import create_connection
+    from surrealengine_auth import SurrealEngineAuth
 
-    # Register a new user
-    user, created = AuthService.register_user(
-        username="johndoe",
-        email="john@example.com",
-        password="securepassword"
-    )
+    create_connection("ws://localhost:8000/rpc", namespace="app",
+                      database="app", username="root", password="root",
+                      async_mode=False)
+    SurrealEngineAuth.configure_token_secret(os.environ["AUTH_SECRET"])
+    SurrealEngineAuth.setup_database()
 
-    # Create an API key for the user
-    api_key = AuthService.create_api_key(
-        user=user,
-        name="My API Key",
-        expires_in_days=365,
-        scopes=["read", "write"]
-    )
+Register and sign in::
 
-    # Get the formatted API key to provide to the user
-    formatted_key = api_key.formatted_key
+    user, created = SurrealEngineAuth.register_user("alice", "alice@example.com", "hunter2")
+    if not created:
+        ...  # username or email already taken; user is None
 
-    # Later, authenticate with the API key
-    key_id, key_secret = APIKey.parse_key(formatted_key)
-    api_key = APIKey.verify_key(key_id, key_secret)
-    if api_key:
-        user = api_key.user
-        print(f"Authenticated as {user.username}")
+    user = SurrealEngineAuth.authenticate("alice", "hunter2")
 
-    # Or use the service for authentication
-    api_key = AuthService.authenticate_with_api_key(formatted_key)
-    if api_key:
-        user = api_key.user
-        print(f"Authenticated as {user.username}")
+API keys are bare UUID4 strings, stored only as digests::
+
+    created = SurrealEngineAuth.create_api_key(user, name="CI", scopes=["read"])
+    api_key = created["api_key"]  # shown once, never recoverable again
+    user = SurrealEngineAuth.authenticate_with_api_key(api_key)
+
+Failed authentication raises :class:`AuthenticationError` rather than
+returning None, so a caller cannot accidentally treat "wrong password" as
+success. See :mod:`surrealengine_auth.service` for the full surface and
+CHANGELOG.md for the 0.1.x migration notes.
 """
 
-from .models import User, UserBuiltin, APIKey, TOTPManager, SecurityEvent
-from .service import SurrealEngineAuth
+from .models import APIKey, SecurityEvent, TOTPManager, User, UserBuiltin
+from .service import (
+    AuthenticationError,
+    LockoutError,
+    PermissionDenied,
+    SurrealEngineAuth,
+)
 from .email_service import EmailService
 from .logger import SurrealEngineLogger, get_logger
+from . import security
 
 __all__ = [
-    "User", "UserBuiltin", "APIKey", "TOTPManager", "SecurityEvent", 
-    "SurrealEngineAuth", "EmailService", "SurrealEngineLogger", "get_logger"
+    "APIKey",
+    "AuthenticationError",
+    "EmailService",
+    "LockoutError",
+    "PermissionDenied",
+    "SecurityEvent",
+    "SurrealEngineAuth",
+    "SurrealEngineLogger",
+    "TOTPManager",
+    "User",
+    "UserBuiltin",
+    "get_logger",
+    "security",
 ]
+
+__version__ = "0.2.0"

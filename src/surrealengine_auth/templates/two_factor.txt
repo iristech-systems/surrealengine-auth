@@ -4,7 +4,7 @@ Your two-factor authentication code is:
 
 {{ code }}
 
-This code will expire in 5 minutes.
+{% if expires_minutes %}This code will expire in {{ expires_minutes }} minute{{ '' if expires_minutes == 1 else 's' }}.{% else %}This code expires shortly.{% endif %}
 
 If you didn't request this code, please secure your account by changing your password immediately.
 

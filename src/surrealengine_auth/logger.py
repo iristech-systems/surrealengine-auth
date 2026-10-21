@@ -91,7 +91,11 @@ class SurrealEngineLogger:
         details: Optional[Dict[str, Any]] = None
     ):
         """
-        Log a security event.
+        Log a security event to the log, and to the SecurityEvent table.
+        
+        ``details`` is redacted before it reaches either destination, so a
+        caller that passes a credential does not write it to disk or to the
+        database.
         
         Args:
             event_type: Type of security event
@@ -100,12 +104,17 @@ class SurrealEngineLogger:
             user_agent: User agent of the client
             details: Additional details about the event
         """
+        from .security import redact, safe_ip_address
+
+        safe_details = redact(details or {})
+        safe_ip = safe_ip_address(ip_address)
+
         extra = {
             'event_type': event_type,
             'user_id': user_id,
-            'ip_address': ip_address,
+            'ip_address': safe_ip,
             'user_agent': user_agent,
-            'details': details or {}
+            'details': safe_details
         }
         
         self.info(f"Security event: {event_type}", extra=extra)
@@ -116,9 +125,9 @@ class SurrealEngineLogger:
             SecurityEvent.log_event(
                 event_type=event_type,
                 user_id=user_id,
-                ip_address=ip_address,
+                ip_address=safe_ip,
                 user_agent=user_agent,
-                details=details
+                details=safe_details
             )
         except ImportError:
             pass  # SecurityEvent model not available

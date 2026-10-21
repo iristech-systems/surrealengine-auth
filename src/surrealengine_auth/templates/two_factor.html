@@ -43,7 +43,11 @@
         
         <div class="code">{{ code }}</div>
         
-        <p>This code will expire in 5 minutes.</p>
+        {% if expires_minutes %}
+        <p>This code will expire in {{ expires_minutes }} minute{{ '' if expires_minutes == 1 else 's' }}.</p>
+        {% else %}
+        <p>This code expires shortly.</p>
+        {% endif %}
         
         <p>If you didn't request this code, please secure your account by changing your password immediately.</p>
     </div>

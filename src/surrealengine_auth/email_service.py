@@ -1,16 +1,53 @@
-from typing import Dict, Any, Optional, List, Union
+"""
+SMTP delivery for the authentication emails.
+
+Templates live in ``templates/`` and are rendered with Jinja2 with autoescaping
+on for HTML, so a username or email address containing markup cannot inject
+into a message body.
+
+Transport notes
+---------------
+* ``use_ssl`` selects implicit TLS (typically port 465) and ``use_tls``
+  selects STARTTLS on a plaintext connection (typically port 587). 0.1.x passed
+  ``use_tls`` to *both* ``use_tls`` and ``start_tls``, which aiosmtplib
+  rejects, and never enabled implicit TLS at all.
+* ``send_email_sync`` refuses to run inside a live event loop instead of
+  raising a confusing "loop already running" error. Async applications should
+  call the ``async`` methods.
+"""
+
+from __future__ import annotations
+
+import asyncio
 import os
-import aiosmtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import aiosmtplib
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+from .logger import get_logger
+
+
+def _as_minutes(expires_in: Optional[int]) -> Optional[int]:
+    """Whole minutes for a seconds-based lifetime, rounded up.
+
+    Rounding up keeps the message from promising a window shorter than the
+    one the code actually has. Returns None when unknown, which the templates
+    render as an unstated expiry rather than a wrong one.
+    """
+    if expires_in is None:
+        return None
+    return max(1, -(-int(expires_in) // 60))
+
+__all__ = ["EmailService"]
+
 
 class EmailService:
-    """
-    Service for sending emails using Jinja2 templates.
-    """
-    
+    """Render templates and hand the result to an SMTP server."""
+
     def __init__(
         self,
         smtp_host: str = "localhost",
@@ -20,21 +57,28 @@ class EmailService:
         use_tls: bool = False,
         use_ssl: bool = False,
         default_sender: str = "noreply@example.com",
-        templates_dir: Optional[str] = None
-    ):
-        """
-        Initialize the email service.
-        
+        templates_dir: Optional[str] = None,
+        timeout: int = 30,
+    ) -> None:
+        """Configure the service.
+
         Args:
-            smtp_host: SMTP server hostname
-            smtp_port: SMTP server port
-            smtp_username: SMTP username (if authentication is required)
-            smtp_password: SMTP password (if authentication is required)
-            use_tls: Whether to use STARTTLS
-            use_ssl: Whether to use SSL/TLS
-            default_sender: Default sender email address
-            templates_dir: Directory containing email templates
+            smtp_host: SMTP server hostname.
+            smtp_port: SMTP server port.
+            smtp_username: SMTP username, if the server requires one.
+            smtp_password: SMTP password.
+            use_tls: Issue STARTTLS after connecting.
+            use_ssl: Connect with implicit TLS.
+            default_sender: Envelope and header sender.
+            templates_dir: Directory holding the Jinja templates.
+            timeout: Socket timeout in seconds.
         """
+        if use_tls and use_ssl:
+            raise ValueError(
+                "use_tls (STARTTLS) and use_ssl (implicit TLS) are mutually "
+                "exclusive"
+            )
+
         self.smtp_host = smtp_host
         self.smtp_port = smtp_port
         self.smtp_username = smtp_username
@@ -42,20 +86,50 @@ class EmailService:
         self.use_tls = use_tls
         self.use_ssl = use_ssl
         self.default_sender = default_sender
-        
-        # Set up Jinja2 environment
+        self.timeout = timeout
+        self.logger = get_logger()
+
         if templates_dir is None:
-            # Use default templates directory
             templates_dir = os.path.join(os.path.dirname(__file__), "templates")
-        
-        # Create templates directory if it doesn't exist
-        Path(templates_dir).mkdir(parents=True, exist_ok=True)
-        
+        if not os.path.isdir(templates_dir):
+            raise FileNotFoundError(f"templates directory not found: {templates_dir}")
+
         self.env = Environment(
             loader=FileSystemLoader(templates_dir),
-            autoescape=select_autoescape(['html', 'xml'])
+            autoescape=select_autoescape(["html", "xml"]),
         )
-    
+
+    # ------------------------------------------------------------------ #
+    # Sending
+    # ------------------------------------------------------------------ #
+
+    def _render(self, template_name: str, context: Dict[str, Any]) -> Dict[str, str]:
+        """Render the ``.txt``/``.html`` pair for ``template_name``."""
+        html = self.env.get_template(f"{template_name}.html").render(**context)
+        text = self.env.get_template(f"{template_name}.txt").render(**context)
+        return {"html": html, "text": text}
+
+    def _build_message(
+        self,
+        recipient: str,
+        subject: str,
+        rendered: Dict[str, str],
+        sender: str,
+        cc: Optional[List[str]],
+        bcc: Optional[List[str]],
+    ) -> MIMEMultipart:
+        message = MIMEMultipart("alternative")
+        message["Subject"] = subject
+        message["From"] = sender
+        message["To"] = recipient
+        if cc:
+            message["Cc"] = ", ".join(cc)
+        if bcc:
+            message["Bcc"] = ", ".join(bcc)
+        message.attach(MIMEText(rendered["text"], "plain"))
+        message.attach(MIMEText(rendered["html"], "html"))
+        return message
+
     async def send_email(
         self,
         recipient: str,
@@ -64,83 +138,51 @@ class EmailService:
         context: Dict[str, Any],
         sender: Optional[str] = None,
         cc: Optional[List[str]] = None,
-        bcc: Optional[List[str]] = None
+        bcc: Optional[List[str]] = None,
     ) -> bool:
+        """Render and send one message.
+
+        Returns True when the SMTP server accepted it. Failures are logged and
+        reported as False; the caller decides whether that is fatal.
         """
-        Send an email using a template.
-        
-        Args:
-            recipient: Recipient email address
-            subject: Email subject
-            template_name: Name of the template to use
-            context: Context variables for the template
-            sender: Sender email address (defaults to self.default_sender)
-            cc: List of CC recipients
-            bcc: List of BCC recipients
-            
-        Returns:
-            True if the email was sent successfully, False otherwise
-        """
-        if sender is None:
-            sender = self.default_sender
-        
-        # Create message
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = subject
-        msg['From'] = sender
-        msg['To'] = recipient
-        
-        if cc:
-            msg['Cc'] = ', '.join(cc)
-        if bcc:
-            msg['Bcc'] = ', '.join(bcc)
-        
-        # Render templates
+        sender = sender or self.default_sender
+
         try:
-            # Try to render both HTML and text templates
-            html_template = self.env.get_template(f"{template_name}.html")
-            text_template = self.env.get_template(f"{template_name}.txt")
-            
-            html_content = html_template.render(**context)
-            text_content = text_template.render(**context)
-            
-            # Attach parts
-            part1 = MIMEText(text_content, 'plain')
-            part2 = MIMEText(html_content, 'html')
-            
-            msg.attach(part1)
-            msg.attach(part2)
-        except Exception as e:
-            # If template not found or rendering fails, use a simple text message
-            print(f"Template rendering error: {e}")
-            msg.attach(MIMEText(f"Error rendering template: {e}", 'plain'))
+            rendered = self._render(template_name, context)
+        except Exception as exc:
+            # Log the detail, but keep it out of the message: 0.1.x attached
+            # the Jinja error to the outgoing body, which leaked template
+            # paths to the recipient.
+            self.logger.error(f"Template rendering failed for {template_name}: {exc}")
             return False
-        
-        # Send email
+
+        message = self._build_message(recipient, subject, rendered, sender, cc, bcc)
+        recipients = [recipient, *(cc or []), *(bcc or [])]
+
         try:
-            recipients = [recipient]
-            if cc:
-                recipients.extend(cc)
-            if bcc:
-                recipients.extend(bcc)
-                
+            # The message is passed positionally. aiosmtplib 4.0 made
+            # positional arguments positional-only, so `message=message`
+            # raises TypeError on every call -- and the exception is
+            # swallowed below, so every send silently failed and returned
+            # False. 0.1.x had the same call and the same bug.
             await aiosmtplib.send(
-                message=msg,
+                message,
                 hostname=self.smtp_host,
                 port=self.smtp_port,
                 username=self.smtp_username,
                 password=self.smtp_password,
-                use_tls=self.use_tls,
-                start_tls=self.use_tls and not self.use_ssl,
+                use_tls=self.use_ssl,
+                start_tls=self.use_tls,
                 validate_certs=True,
+                timeout=self.timeout,
                 sender=sender,
-                recipients=recipients
+                recipients=recipients,
             )
             return True
-        except Exception as e:
-            print(f"Email sending error: {e}")
+        except Exception as exc:
+            self.logger.error(f"Email delivery failed to {recipient}: {exc}")
             return False
-    
+
     def send_email_sync(
         self,
         recipient: str,
@@ -149,55 +191,50 @@ class EmailService:
         context: Dict[str, Any],
         sender: Optional[str] = None,
         cc: Optional[List[str]] = None,
-        bcc: Optional[List[str]] = None
+        bcc: Optional[List[str]] = None,
     ) -> bool:
+        """Blocking wrapper around :meth:`send_email`.
+
+        Raises:
+            RuntimeError: when called from inside a running event loop, where
+                there is no way to block. Use :meth:`send_email` there.
         """
-        Synchronous version of send_email.
-        """
-        import asyncio
-        
         try:
-            loop = asyncio.get_event_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
-            # If no event loop is available, create a new one
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        
-        return loop.run_until_complete(
+            pass
+        else:
+            raise RuntimeError(
+                "send_email_sync() cannot run inside an event loop; "
+                "await EmailService.send_email() instead"
+            )
+
+        return asyncio.run(
             self.send_email(recipient, subject, template_name, context, sender, cc, bcc)
         )
-    
+
+    # ------------------------------------------------------------------ #
+    # Auth-specific messages
+    # ------------------------------------------------------------------ #
+
     async def send_confirmation_email(self, user, confirmation_link: str) -> bool:
-        """
-        Send an account confirmation email.
-        
-        Args:
-            user: User object
-            confirmation_link: Link for confirming the account
-            
-        Returns:
-            True if the email was sent successfully, False otherwise
-        """
+        """Send the address-confirmation link."""
         return await self.send_email(
             recipient=user.email,
             subject="Confirm Your Account",
             template_name="confirmation",
-            context={
-                "user": user,
-                "confirmation_link": confirmation_link
-            }
+            context={"user": user, "confirmation_link": confirmation_link},
         )
-    
-    async def send_two_factor_code(self, user, code: str) -> bool:
-        """
-        Send a two-factor authentication code via email.
-        
-        Args:
-            user: User object
-            code: Two-factor authentication code
-            
-        Returns:
-            True if the email was sent successfully, False otherwise
+
+    async def send_two_factor_code(
+        self, user, code: str, expires_in: Optional[int] = None
+    ) -> bool:
+        """Send a 2FA code by email.
+
+        ``expires_in`` is rendered into the message so the stated lifetime
+        matches the one the code was actually issued with. A template that
+        hardcodes "5 minutes" silently lies as soon as the lifetime is
+        retuned.
         """
         return await self.send_email(
             recipient=user.email,
@@ -205,63 +242,51 @@ class EmailService:
             template_name="two_factor",
             context={
                 "user": user,
-                "code": code
-            }
+                "code": code,
+                "expires_in": expires_in,
+                "expires_minutes": _as_minutes(expires_in),
+            },
         )
-    
+
     async def send_passwordless_login_link(self, user, login_link: str) -> bool:
-        """
-        Send a passwordless login link via email.
-        
-        Args:
-            user: User object
-            login_link: Link for passwordless login
-            
-        Returns:
-            True if the email was sent successfully, False otherwise
-        """
+        """Send a passwordless login link."""
         return await self.send_email(
             recipient=user.email,
             subject="Your Login Link",
             template_name="passwordless_login",
-            context={
-                "user": user,
-                "login_link": login_link
-            }
+            context={"user": user, "login_link": login_link},
         )
-    
+
     def send_confirmation_email_sync(self, user, confirmation_link: str) -> bool:
-        """Synchronous version of send_confirmation_email."""
+        """Blocking :meth:`send_confirmation_email`."""
         return self.send_email_sync(
             recipient=user.email,
             subject="Confirm Your Account",
             template_name="confirmation",
-            context={
-                "user": user,
-                "confirmation_link": confirmation_link
-            }
+            context={"user": user, "confirmation_link": confirmation_link},
         )
-    
-    def send_two_factor_code_sync(self, user, code: str) -> bool:
-        """Synchronous version of send_two_factor_code."""
+
+    def send_two_factor_code_sync(
+        self, user, code: str, expires_in: Optional[int] = None
+    ) -> bool:
+        """Blocking :meth:`send_two_factor_code`."""
         return self.send_email_sync(
             recipient=user.email,
             subject="Your Two-Factor Authentication Code",
             template_name="two_factor",
             context={
                 "user": user,
-                "code": code
-            }
+                "code": code,
+                "expires_in": expires_in,
+                "expires_minutes": _as_minutes(expires_in),
+            },
         )
-    
+
     def send_passwordless_login_link_sync(self, user, login_link: str) -> bool:
-        """Synchronous version of send_passwordless_login_link."""
+        """Blocking :meth:`send_passwordless_login_link`."""
         return self.send_email_sync(
             recipient=user.email,
             subject="Your Login Link",
             template_name="passwordless_login",
-            context={
-                "user": user,
-                "login_link": login_link
-            }
+            context={"user": user, "login_link": login_link},
         )
